@@ -1,0 +1,20 @@
+{
+    "files.exclude": {
+        "**/.*.*.cmd": true,
+        "**/.*.d": true,
+        "**/.*.o": true,
+        "**/.*.s": true,
+        "**/.*.su": true,
+        "**/.*.i": true
+    },
+    "[c]": {
+        "editor.detectIndentation": false,
+        "editor.tabSize": 8,
+        "editor.insertSpaces": false,
+        "editor.rulers": [80,100]
+    },
+    "files.associations": {
+        "*.h": "c"
+    },
+    "C_Cpp.errorSquiggles": "enabled"
+}

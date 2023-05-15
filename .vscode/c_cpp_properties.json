@@ -1,0 +1,20 @@
+{
+    "configurations": [
+        {
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/opt/jerryzheng/yocto_linux/build-condor-adas/tmp/work-shared/condor/kernel-source/arch/arm64/include",
+                "/opt/jerryzheng/yocto_linux/build-condor-adas/tmp/work-shared/condor/kernel-source/include",
+                "/opt/jerryzheng/yocto_linux/build-condor-adas/tmp/work-shared/condor/kernel-source/include/uapi/linux",
+                "/opt/jerryzheng/yocto_linux/build-condor-adas/tmp/work/condor-poky-linux/linux-renesas/5.4.72+gitAUTOINC+902a351a25-r1/linux-condor-standard-build/include/**",
+                "/opt/jerryzheng/yocto_linux/build-condor-adas/tmp/work/aarch64-poky-linux/linux-libc-headers/5.4-r0/git/arch/arm/include/**",
+            ],
+            "name": "Linux",
+            "intelliSenseMode": "gcc-arm64",
+            "cppStandard": "gnu++14",
+            "compilerPath": "/usr/bin/aarch64-linux-gnu-gcc",
+            "compileCommands": "${workspaceFolder}/compile_commands.json"
+        }
+    ],
+    "version": 4
+}
