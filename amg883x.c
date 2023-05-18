@@ -43,7 +43,7 @@ struct amg883x {
 	int fps;
 };
 
-static  int amg883x_open(struct inode *inode, struct file *filp)
+static int amg883x_open(struct inode *inode, struct file *filp)
 {
 	int ret;
 	struct amg883x *ir_array = NULL;
@@ -69,7 +69,7 @@ static  int amg883x_open(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static  int amg883x_release(struct inode *inode, struct file *filp)
+static int amg883x_release(struct inode *inode, struct file *filp)
 {
 	int ret;
 	struct amg883x *ir_array = NULL;
@@ -91,7 +91,7 @@ static  int amg883x_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static  ssize_t amg883x_read(struct  file *filp,  char  *buf, size_t len, 
+static ssize_t amg883x_read(struct  file *filp,  char  *buf, size_t len, 
 			     loff_t *offset) 
 {
 	struct amg883x *ir_array = filp->private_data;
@@ -141,7 +141,7 @@ static  ssize_t amg883x_read(struct  file *filp,  char  *buf, size_t len,
 	return  sizeof(struct amg883x_read_data); /* temperature: two bytes */
 }
  
-static  ssize_t amg883x_write( struct file *filp,  const char *buf,
+static ssize_t amg883x_write( struct file *filp,  const char *buf,
 			       size_t len, loff_t *offset) 
 {
 	int ret;
@@ -168,7 +168,7 @@ static  ssize_t amg883x_write( struct file *filp,  const char *buf,
 	}
 
 	if (wr_buf->wr_flag & AMG883X_WR_FLAG_RESET) {
-		dev_dbg(dev, "write command reset register %02X", ]
+		dev_dbg(dev, "write command reset register %02X",
 			wr_buf->reset_reg);
 		ret = i2c_smbus_write_byte_data(client, AMG883x_RESET_REG, 
 						wr_buf->reset_reg);
@@ -206,11 +206,47 @@ static  ssize_t amg883x_write( struct file *filp,  const char *buf,
      	return  len;
 }
 
+static ssize_t amg883x_ioctl( struct file *filp, unsigned int cmd, unsigned long arg ) 
+{
+	struct amg883x *ir_array = filp->private_data;
+	struct i2c_client *client = ir_array->client;
+	struct device *dev = &client->dev;
+	int ret = 0;
+	s32 value;
+
+	switch (cmd) {
+	case AMG_CMD_PW_ON:
+		dev_info(dev, "get ioctl command power on\n");
+		break;
+	case AMG_CMD_PW_OFF:
+		dev_info(dev, "get ioctl command power off\n");
+		break;
+	case AMG_CMD_RD_TEMP:
+		dev_info(dev, "get ioctl command read device temperature\n");
+
+        	value = i2c_smbus_read_word_data(client, AMG883x_TEMPERATURE);
+
+		if (value < 0) {
+			dev_err(dev, "smbus read word failed to get temperature");
+			ret = -EIO;
+		} else {
+			if (copy_to_user((int *)arg, &value, sizeof(int)))
+				ret =  -EFAULT;
+		}
+		break;
+	default:
+		break;
+	}
+
+	return ret;
+}
+
 static struct file_operations amg883x_fops = {
 	.read 		= amg883x_read,
 	.write 		= amg883x_write,
 	.open 		= amg883x_open,
 	.release 	= amg883x_release,
+	.unlocked_ioctl = amg883x_ioctl,
 };
 
 static int amg883x_probe(struct i2c_client *client, 

@@ -76,4 +76,12 @@ struct amg883x_write_data {
 	__u8 wr_flag;
 };
 
+#define AMG_CMD_PW_ON		_IO('m', 1)
+#define AMG_CMD_PW_OFF		_IO('m', 2)
+#define AMG_CMD_RD_TEMP 	_IOR('m', 3, int)
+#define AMG_CMD_WR_FPS 		_IOW('m', 4, int)
+#define AMG_CMD_RD_FPS 		_IOW('m', 5, int)
+#define AMG_CMD_WR_ALL		_IOW('m', 6, struct amg883x_write_data)
+#define AMG_CMD_RD_ALL		_IOR('m', 7, struct amg883x_read_data)
+
 #endif
