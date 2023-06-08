@@ -23,9 +23,12 @@
 #define AMG883x_INT_CTRL	0x03
 #define AMG883x_STATUS		0x04
 #define AMG883x_STATUS_CLEAR	0x05
-#define AMG883x_INTH		0x08
-#define AMG883x_INTL		0x0A
-#define AMG883x_IHYS		0x0C
+#define AMG883x_INTHL		0x08
+#define AMG883x_INTHH		0x09
+#define AMG883x_INTLL		0x0A
+#define AMG883x_INTLH		0x0B
+#define AMG883x_IHYSL		0x0C
+#define AMG883x_IHYSH		0x0D
 #define AMG883x_TEMPERATURE	0x0E
 #define AMG883x_INT_TABLE	0x10
 #define AMG883x_INT_TABLE_CNT	0x08
@@ -42,6 +45,73 @@ struct amg883x {
 	struct cdev cdev;
 	int fps;
 };
+
+static int amg883x_irq_process(struct amg883x *amg883x)
+{
+	struct device *dev = &amg883x->client->dev;
+	struct i2c_client *client = amg883x->client;
+	struct amg883x_write_data *wr_buf;
+	s32 value;
+	int ret;
+	int i;
+
+	wr_buf = kmalloc(sizeof(struct amg883x_write_data), 
+			      GFP_KERNEL);
+
+	value = i2c_smbus_read_byte_data(client, AMG883x_STATUS);
+	dev_info(dev, "irq flag 0x%02x\n", value);
+	value = i2c_smbus_read_byte_data(client, AMG883x_INT_CTRL);
+
+	if ((value&0x02) == 0x00) {
+		ret = i2c_smbus_write_byte_data(client, AMG883x_INT_CTRL, 0x03);
+	}
+
+	dev_info(dev, "irq control 0x%02x\n", value);
+	value = i2c_smbus_read_byte_data(client, AMG883x_INTHL);
+	dev_info(dev, "INT_LVL_H_L 0x%02x\n", value);
+
+	if (value < 0x80) {
+		ret = i2c_smbus_write_byte_data(client, AMG883x_INTHL, 0x80);
+		ret = i2c_smbus_write_byte_data(client, AMG883x_INTHH, 0x00);
+		ret = i2c_smbus_write_byte_data(client, AMG883x_IHYSL, 0x00);
+		ret = i2c_smbus_write_byte_data(client, AMG883x_IHYSH, 0x00);
+	}
+
+	value = i2c_smbus_read_byte_data(client, AMG883x_INTLL);
+	dev_info(dev, "INT_LVL_L_L 0x%02x\n", value);
+
+	for (i = 0; i < AMG883x_INT_TABLE_CNT; i++) {
+		value = i2c_smbus_read_byte_data(client, AMG883x_INT_TABLE + i);
+		dev_info(dev, "INT TABLE%d %2x\n", i, value);
+	}
+
+	if (value < 0) {
+		ret = value;
+		dev_err(dev, "failed to read data");
+		goto un_alloc;
+	}
+
+	wr_buf->clear_reg = 0;
+	wr_buf->clear_reg_bit.int_clear = 1;
+
+	/* clear interrupt flag */
+	ret = i2c_smbus_write_byte_data(client, AMG883x_STATUS_CLEAR, 
+					wr_buf->clear_reg);
+
+un_alloc:
+	kfree(wr_buf);
+	return ret;
+}
+
+static irqreturn_t amg883x_irq_handler(int irq, void *devid)
+{
+	struct amg883x *amg883x = devid;
+	int ret; 
+
+	ret = amg883x_irq_process(amg883x);
+
+	return ret < 0 ? IRQ_NONE : IRQ_HANDLED;
+}
 
 static int amg883x_open(struct inode *inode, struct file *filp)
 {
@@ -112,11 +182,11 @@ static ssize_t amg883x_read(struct  file *filp,  char  *buf, size_t len,
 	rd_buf->int_control = (u8)value;
 	value = i2c_smbus_read_byte_data(client, AMG883x_STATUS);
 	rd_buf->status = (u8)value;
-	value = i2c_smbus_read_word_data(client, AMG883x_INTH);
+	value = i2c_smbus_read_word_data(client, AMG883x_INTHL);
 	rd_buf->int_high_level = (u16)value;
-	value = i2c_smbus_read_word_data(client, AMG883x_INTL);
+	value = i2c_smbus_read_word_data(client, AMG883x_INTHH);
 	rd_buf->int_low_level = (u16)value;
-	value = i2c_smbus_read_word_data(client, AMG883x_IHYS);
+	value = i2c_smbus_read_word_data(client, AMG883x_IHYSL);
 	rd_buf->int_hysteresis_level = (u16)value;
 	value = i2c_smbus_read_word_data(client, AMG883x_TEMPERATURE);
 	rd_buf->thermistor = (u16)value;
@@ -290,6 +360,17 @@ static int amg883x_probe(struct i2c_client *client,
 		}
 	}
 
+	if (client->irq) {
+		dev_info(dev, "get irq of amg883x %d\n", client->irq);
+
+		ret = devm_request_threaded_irq(dev, client->irq, NULL,
+						amg883x_irq_handler,
+						IRQF_TRIGGER_LOW|IRQF_ONESHOT, dev_name(dev),
+						amg883x);
+		if (ret)
+			dev_err(dev, "irq request failed!\n");
+	}
+
 	ret = alloc_chrdev_region(&dev_num, 0, 1, "amg883x");
 	if  (ret < 0) {
         	dev_err(dev, "Can't static register chrdev region!\n" );   
@@ -360,6 +441,6 @@ static struct i2c_driver amg883x_driver = {
 };
 module_i2c_driver(amg883x_driver);
 
-MODULE_AUTHOR("Jerry Zheng");
+MODULE_AUTHOR("Jerry Zheng <JerryZheng89@outlook.com>");
 MODULE_DESCRIPTION("Panasonic ir array sensor");
 MODULE_LICENSE("GPL");
