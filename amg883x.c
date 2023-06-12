@@ -11,6 +11,7 @@
 #include <linux/of_graph.h>
 #include <linux/fs.h>
 #include <linux/regmap.h>
+#include <linux/miscdevice.h>
 
 #include "amg883x.h"
 
@@ -36,13 +37,12 @@
 #define AMG883x_PIXEL_CNT	64
 
 
-static struct class *amg883x_class;
-static dev_t dev_num;
 
 struct amg883x {
 	struct i2c_client *client;
 	struct gpio_desc *int_gpio; /* for interrupt */
-	struct cdev cdev;
+	struct miscdevice miscdev;
+	struct device *dev;
 	int fps;
 };
 
@@ -116,10 +116,10 @@ static irqreturn_t amg883x_irq_handler(int irq, void *devid)
 static int amg883x_open(struct inode *inode, struct file *filp)
 {
 	int ret;
-	struct amg883x *ir_array = NULL;
+	struct miscdevice *misc = filp->private_data;
+	struct amg883x *ir_array = container_of(misc, struct amg883x, miscdev);
 	struct device *dev = NULL;
 
-	ir_array = container_of(inode->i_cdev, struct amg883x, cdev);
 	dev = &ir_array->client->dev;
 
 	if (ir_array->fps != 10 && ir_array->fps != 1) {
@@ -142,11 +142,10 @@ static int amg883x_open(struct inode *inode, struct file *filp)
 static int amg883x_release(struct inode *inode, struct file *filp)
 {
 	int ret;
-	struct amg883x *ir_array = NULL;
 	struct device *dev = NULL;
+	struct amg883x *ir_array = filp->private_data;
 
 	filp->private_data = NULL;
-	ir_array = container_of(inode->i_cdev, struct amg883x, cdev);
 	dev = &ir_array->client->dev;
 	
 	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_OPERA_MODE, 
@@ -312,6 +311,7 @@ static ssize_t amg883x_ioctl( struct file *filp, unsigned int cmd, unsigned long
 }
 
 static struct file_operations amg883x_fops = {
+	.owner		= THIS_MODULE,
 	.read 		= amg883x_read,
 	.write 		= amg883x_write,
 	.open 		= amg883x_open,
@@ -371,35 +371,26 @@ static int amg883x_probe(struct i2c_client *client,
 			dev_err(dev, "irq request failed!\n");
 	}
 
-	ret = alloc_chrdev_region(&dev_num, 0, 1, "amg883x");
-	if  (ret < 0) {
-        	dev_err(dev, "Can't static register chrdev region!\n" );   
-		goto unregister_chrdev;
+	amg883x->dev = get_device(dev);
+	dev_set_drvdata(dev, amg883x);
+	amg883x->miscdev.parent = amg883x->dev;
+	amg883x->miscdev.fops = &amg883x_fops;
+	amg883x->miscdev.name = "amg883x";
+	amg883x->miscdev.minor = MISC_DYNAMIC_MINOR;
+
+	ret = misc_register(&amg883x->miscdev);
+	if (ret != 0) {
+		amg883x->miscdev.name = NULL;
+		dev_err(dev, "misc register failed!\n");
+		goto put_device;
 	}
-	dev->devt = dev_num;
-
-	cdev_init(&amg883x->cdev, &amg883x_fops);
-	/* amg883x->cdev.owner = THIS_MODULE; */
-	ret = cdev_add(&amg883x->cdev, dev_num, 1);
-	if (ret) {
-        	dev_err(dev, "Can't static register chrdev region!\n" );   
-		goto cdev_remove;
-	}
-	/* dev_info(dev, "device name:%s", dev->kobj.name); */
-
-	dev_info(dev, "major:%u", MAJOR(dev_num));
-	amg883x_class = class_create(THIS_MODULE, AMG883X_CLASS);
-	device_create(amg883x_class, NULL, dev_num, NULL, "amg883x");
-
 	i2c_set_clientdata(client, amg883x);
-	return 0;
-
-cdev_remove:
-	unregister_chrdev_region(client->dev.devt, 1);
-unregister_chrdev:
-	kzfree(amg883x);
-
+	
 	return ret;
+put_device:
+	put_device(amg883x->dev);
+	kfree(amg883x);
+	return -1;
 }
 
 static int amg883x_remove(struct i2c_client *client)
@@ -408,11 +399,7 @@ static int amg883x_remove(struct i2c_client *client)
 	struct amg883x *amg883x = i2c_get_clientdata(client);
 
 	dev_info(dev, "amg8833 removed!\n");
-	device_destroy(amg883x_class, client->dev.devt);
-	class_destroy(amg883x_class);
-	cdev_del(&amg883x->cdev);
-
-	unregister_chrdev_region(client->dev.devt, 1);
+	misc_deregister(&amg883x->miscdev);
 
 	return 0;
 }
