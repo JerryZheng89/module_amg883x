@@ -12,6 +12,7 @@
 #include <linux/fs.h>
 #include <linux/regmap.h>
 #include <linux/miscdevice.h>
+#include <linux/poll.h>
 
 #include "amg883x.h"
 
@@ -36,7 +37,8 @@
 #define AMG883x_PIXEL_VALUE	0x80
 #define AMG883x_PIXEL_CNT	64
 
-
+static DECLARE_WAIT_QUEUE_HEAD(amg883x_rq);
+static int new_data_ready = false;
 
 struct amg883x {
 	struct i2c_client *client;
@@ -109,6 +111,10 @@ static irqreturn_t amg883x_irq_handler(int irq, void *devid)
 	int ret; 
 
 	ret = amg883x_irq_process(amg883x);
+	if (ret == 0) {
+		new_data_ready = true;
+		wake_up_interruptible(&amg883x_rq);
+	}
 
 	return ret < 0 ? IRQ_NONE : IRQ_HANDLED;
 }
@@ -310,6 +316,19 @@ static ssize_t amg883x_ioctl( struct file *filp, unsigned int cmd, unsigned long
 	return ret;
 }
 
+static __poll_t amg883x_poll(struct file *filp, poll_table *wait)
+{
+	__poll_t mask = 0;
+
+	poll_wait(filp, &amg883x_rq, wait);
+	if (new_data_ready == true) {
+		new_data_ready = false;
+		mask = POLLIN | POLLRDNORM;
+	}
+
+	return mask;
+}
+
 static struct file_operations amg883x_fops = {
 	.owner		= THIS_MODULE,
 	.read 		= amg883x_read,
@@ -317,6 +336,7 @@ static struct file_operations amg883x_fops = {
 	.open 		= amg883x_open,
 	.release 	= amg883x_release,
 	.unlocked_ioctl = amg883x_ioctl,
+	.poll 		= amg883x_poll,
 };
 
 static int amg883x_probe(struct i2c_client *client, 
