@@ -37,14 +37,14 @@
 #define AMG883x_PIXEL_VALUE	0x80
 #define AMG883x_PIXEL_CNT	64
 
-static DECLARE_WAIT_QUEUE_HEAD(amg883x_rq);
-static int new_data_ready = false;
 
 struct amg883x {
 	struct i2c_client *client;
 	struct gpio_desc *int_gpio; /* for interrupt */
 	struct miscdevice miscdev;
+	wait_queue_head_t read_wait;
 	struct device *dev;
+	int read_ready;
 	int fps;
 };
 
@@ -112,8 +112,8 @@ static irqreturn_t amg883x_irq_handler(int irq, void *devid)
 
 	ret = amg883x_irq_process(amg883x);
 	if (ret == 0) {
-		new_data_ready = true;
-		wake_up_interruptible(&amg883x_rq);
+		amg883x->read_ready = 1;
+		wake_up_interruptible(&amg883x->read_wait);
 	}
 
 	return ret < 0 ? IRQ_NONE : IRQ_HANDLED;
@@ -122,8 +122,8 @@ static irqreturn_t amg883x_irq_handler(int irq, void *devid)
 static int amg883x_open(struct inode *inode, struct file *filp)
 {
 	int ret;
-	struct miscdevice *misc = filp->private_data;
-	struct amg883x *ir_array = container_of(misc, struct amg883x, miscdev);
+	struct amg883x *ir_array = container_of(filp->private_data, 
+						struct amg883x, miscdev);
 	struct device *dev = NULL;
 
 	dev = &ir_array->client->dev;
@@ -133,10 +133,14 @@ static int amg883x_open(struct inode *inode, struct file *filp)
 		return -EIO;
 	}
 
-	filp->private_data = ir_array;
-
 	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_OPERA_MODE, 
 					AMG883x_MODE_NORMAL);
+	ret = i2c_smbus_read_byte_data(ir_array->client, AMG883x_INTHL);
+	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_INT_CTRL, 0x00);
+	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_INTHL, 0x80);
+	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_INTHH, 0x00);
+	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_IHYSL, 0x00);
+	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_IHYSH, 0x00);
 	if (ret < 0) {
 		dev_err(dev, "wrtie operation mode failed!, %d\n", ret);
 		return ret;
@@ -149,13 +153,16 @@ static int amg883x_release(struct inode *inode, struct file *filp)
 {
 	int ret;
 	struct device *dev = NULL;
-	struct amg883x *ir_array = filp->private_data;
+	struct amg883x *ir_array = container_of(filp->private_data, 
+						struct amg883x, miscdev);
 
-	filp->private_data = NULL;
+	//filp->private_data = NULL;
 	dev = &ir_array->client->dev;
 	
 	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_OPERA_MODE, 
-					AMG883x_MODE_NORMAL);
+					AMG883x_MODE_SLEEP);
+	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_INT_CTRL, 
+					0x00);
 	if (ret < 0) {
 		dev_err(dev, "wrtie operation mode failed!, %d\n", ret);
 		return ret;
@@ -169,13 +176,15 @@ static int amg883x_release(struct inode *inode, struct file *filp)
 static ssize_t amg883x_read(struct  file *filp,  char  *buf, size_t len, 
 			     loff_t *offset) 
 {
-	struct amg883x *ir_array = filp->private_data;
+	struct amg883x *ir_array = container_of(filp->private_data, 
+						struct amg883x, miscdev);
 	struct i2c_client *client = ir_array->client;
 	struct device *dev = &client->dev;
 	struct amg883x_read_data *rd_buf;
 	s32 value;
 	int i;
 
+	ir_array->read_ready = 0;
 	rd_buf = kmalloc(sizeof(struct amg883x_read_data), 
 			      GFP_KERNEL);
 
@@ -220,7 +229,8 @@ static ssize_t amg883x_write( struct file *filp,  const char *buf,
 			       size_t len, loff_t *offset) 
 {
 	int ret;
-	struct amg883x *ir_array = filp->private_data;
+	struct amg883x *ir_array = container_of(filp->private_data, 
+						struct amg883x, miscdev);
 	struct i2c_client *client = ir_array->client;
 	struct device *dev = &client->dev;
 	struct amg883x_write_data * wr_buf;
@@ -283,7 +293,8 @@ static ssize_t amg883x_write( struct file *filp,  const char *buf,
 
 static ssize_t amg883x_ioctl( struct file *filp, unsigned int cmd, unsigned long arg ) 
 {
-	struct amg883x *ir_array = filp->private_data;
+	struct amg883x *ir_array = container_of(filp->private_data, 
+						struct amg883x, miscdev);
 	struct i2c_client *client = ir_array->client;
 	struct device *dev = &client->dev;
 	int ret = 0;
@@ -319,10 +330,11 @@ static ssize_t amg883x_ioctl( struct file *filp, unsigned int cmd, unsigned long
 static __poll_t amg883x_poll(struct file *filp, poll_table *wait)
 {
 	__poll_t mask = 0;
+	struct amg883x *ir_array = container_of(filp->private_data, 
+						struct amg883x, miscdev);
 
-	poll_wait(filp, &amg883x_rq, wait);
-	if (new_data_ready == true) {
-		new_data_ready = false;
+	poll_wait(filp, &ir_array->read_wait, wait);
+	if (ir_array->read_ready == 1) {
 		mask = POLLIN | POLLRDNORM;
 	}
 
@@ -380,6 +392,9 @@ static int amg883x_probe(struct i2c_client *client,
 		}
 	}
 
+	init_waitqueue_head(&amg883x->read_wait);
+	amg883x->read_ready = 0;
+
 	if (client->irq) {
 		dev_info(dev, "get irq of amg883x %d\n", client->irq);
 
@@ -391,6 +406,7 @@ static int amg883x_probe(struct i2c_client *client,
 			dev_err(dev, "irq request failed!\n");
 	}
 
+	dev_info(dev, "set drv data %d\n", client->irq);
 	amg883x->dev = get_device(dev);
 	dev_set_drvdata(dev, amg883x);
 	amg883x->miscdev.parent = amg883x->dev;
@@ -398,12 +414,14 @@ static int amg883x_probe(struct i2c_client *client,
 	amg883x->miscdev.name = "amg883x";
 	amg883x->miscdev.minor = MISC_DYNAMIC_MINOR;
 
+	dev_info(dev, "register misc %d\n", client->irq);
 	ret = misc_register(&amg883x->miscdev);
 	if (ret != 0) {
 		amg883x->miscdev.name = NULL;
 		dev_err(dev, "misc register failed!\n");
 		goto put_device;
 	}
+	dev_info(dev, "set client data %d\n", client->irq);
 	i2c_set_clientdata(client, amg883x);
 	
 	return ret;
@@ -417,6 +435,12 @@ static int amg883x_remove(struct i2c_client *client)
 {
 	struct device *dev = &client->dev;
 	struct amg883x *amg883x = i2c_get_clientdata(client);
+	disable_irq(client->irq);
+	i2c_smbus_write_byte_data(client, AMG883x_INT_CTRL, 
+					0x00);
+	amg883x->read_wait.head.next = NULL;
+	amg883x->read_wait.head.prev = NULL;
+	put_device(amg883x->dev);
 
 	dev_info(dev, "amg8833 removed!\n");
 	misc_deregister(&amg883x->miscdev);
