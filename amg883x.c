@@ -127,6 +127,7 @@ static int amg883x_open(struct inode *inode, struct file *filp)
 	struct device *dev = NULL;
 
 	dev = &ir_array->client->dev;
+	new_data_ready = false;
 
 	if (ir_array->fps != 10 && ir_array->fps != 1) {
 		dev_err(dev, "get amg883x data failed, fps:%d", ir_array->fps);
@@ -137,6 +138,9 @@ static int amg883x_open(struct inode *inode, struct file *filp)
 
 	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_OPERA_MODE, 
 					AMG883x_MODE_NORMAL);
+	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_INT_CTRL, 0x03);
+	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_INTHL, 0x80);
+	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_INTHH, 0x00);
 	if (ret < 0) {
 		dev_err(dev, "wrtie operation mode failed!, %d\n", ret);
 		return ret;
@@ -155,7 +159,7 @@ static int amg883x_release(struct inode *inode, struct file *filp)
 	dev = &ir_array->client->dev;
 	
 	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_OPERA_MODE, 
-					AMG883x_MODE_NORMAL);
+					AMG883x_MODE_SLEEP);
 	if (ret < 0) {
 		dev_err(dev, "wrtie operation mode failed!, %d\n", ret);
 		return ret;
