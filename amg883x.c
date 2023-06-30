@@ -13,6 +13,7 @@
 #include <linux/regmap.h>
 #include <linux/miscdevice.h>
 #include <linux/poll.h>
+#include <linux/regmap.h>
 
 #include "amg883x.h"
 
@@ -46,48 +47,83 @@ struct amg883x {
 	struct miscdevice miscdev;
 	struct device *dev;
 	int fps;
+	struct regmap *regmap;
 };
+
+static const struct regmap_config amg883x_regmap_config = {
+	.reg_bits = 8,
+	.val_bits = 8,
+	.max_register = 0xff,
+};
+
+static inline int amg883x_read_reg(struct amg883x *amg883x, u8 addr, u8 *value)
+{
+	unsigned int val;
+	int ret;
+
+	ret = regmap_read(amg883x->regmap, addr , &val);
+	if (ret) {
+		dev_err(amg883x->dev, "i2c read failed at addr: %x\n", addr);
+		return ret;
+	}
+
+	*value = val & 0xff;
+
+	return 0;
+}
+
+static inline int amg883x_write_reg(struct amg883x *amg883x, u8 addr, u8 value)
+{
+	int ret;
+
+	ret = regmap_write(amg883x->regmap, addr , value);
+	if (ret) {
+		dev_err(amg883x->dev, "i2c read failed at addr: %x\n", addr);
+		return ret;
+	}
+
+	return 0;
+}
 
 static int amg883x_irq_process(struct amg883x *amg883x)
 {
 	struct device *dev = &amg883x->client->dev;
-	struct i2c_client *client = amg883x->client;
 	struct amg883x_write_data *wr_buf;
-	s32 value;
+	u8 value;
 	int ret;
 	int i;
 
 	wr_buf = kmalloc(sizeof(struct amg883x_write_data), 
 			      GFP_KERNEL);
 
-	value = i2c_smbus_read_byte_data(client, AMG883x_STATUS);
+	ret = amg883x_read_reg(amg883x, AMG883x_STATUS, &value);
 	dev_info(dev, "irq flag 0x%02x\n", value);
-	value = i2c_smbus_read_byte_data(client, AMG883x_INT_CTRL);
 
+	ret = amg883x_read_reg(amg883x, AMG883x_INT_CTRL, &value);
 	if ((value&0x02) == 0x00) {
-		ret = i2c_smbus_write_byte_data(client, AMG883x_INT_CTRL, 0x03);
+		ret = amg883x_write_reg(amg883x, AMG883x_INT_CTRL, 0x03);
 	}
 
 	dev_info(dev, "irq control 0x%02x\n", value);
-	value = i2c_smbus_read_byte_data(client, AMG883x_INTHL);
+	ret = amg883x_read_reg(amg883x, AMG883x_INTHL, &value);
 	dev_info(dev, "INT_LVL_H_L 0x%02x\n", value);
 
 	if (value < 0x80) {
-		ret = i2c_smbus_write_byte_data(client, AMG883x_INTHL, 0x80);
-		ret = i2c_smbus_write_byte_data(client, AMG883x_INTHH, 0x00);
-		ret = i2c_smbus_write_byte_data(client, AMG883x_IHYSL, 0x00);
-		ret = i2c_smbus_write_byte_data(client, AMG883x_IHYSH, 0x00);
+		ret = amg883x_write_reg(amg883x, AMG883x_INTHL, 0x80);
+		ret = amg883x_write_reg(amg883x, AMG883x_INTHH, 0x00);
+		ret = amg883x_write_reg(amg883x, AMG883x_IHYSL, 0x00);
+		ret = amg883x_write_reg(amg883x, AMG883x_IHYSH, 0x00);
 	}
 
-	value = i2c_smbus_read_byte_data(client, AMG883x_INTLL);
+	ret = amg883x_read_reg(amg883x, AMG883x_INTLL, &value);
 	dev_info(dev, "INT_LVL_L_L 0x%02x\n", value);
 
 	for (i = 0; i < AMG883x_INT_TABLE_CNT; i++) {
-		value = i2c_smbus_read_byte_data(client, AMG883x_INT_TABLE + i);
+		ret = amg883x_read_reg(amg883x, AMG883x_INT_TABLE + i, &value);
 		dev_info(dev, "INT TABLE%d %2x\n", i, value);
 	}
 
-	if (value < 0) {
+	if (ret) {
 		ret = value;
 		dev_err(dev, "failed to read data");
 		goto un_alloc;
@@ -97,8 +133,8 @@ static int amg883x_irq_process(struct amg883x *amg883x)
 	wr_buf->clear_reg_bit.int_clear = 1;
 
 	/* clear interrupt flag */
-	ret = i2c_smbus_write_byte_data(client, AMG883x_STATUS_CLEAR, 
-					wr_buf->clear_reg);
+	ret = amg883x_write_reg(amg883x, AMG883x_STATUS_CLEAR, 
+				wr_buf->clear_reg);
 
 un_alloc:
 	kfree(wr_buf);
@@ -124,6 +160,7 @@ static int amg883x_open(struct inode *inode, struct file *filp)
 	int ret;
 	struct miscdevice *misc = filp->private_data;
 	struct amg883x *ir_array = container_of(misc, struct amg883x, miscdev);
+	struct amg883x *amg883x = container_of(misc, struct amg883x, miscdev);
 	struct device *dev = NULL;
 
 	dev = &ir_array->client->dev;
@@ -136,11 +173,11 @@ static int amg883x_open(struct inode *inode, struct file *filp)
 
 	filp->private_data = ir_array;
 
-	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_OPERA_MODE, 
-					AMG883x_MODE_NORMAL);
-	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_INT_CTRL, 0x03);
-	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_INTHL, 0x80);
-	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_INTHH, 0x00);
+	ret = amg883x_write_reg(amg883x, AMG883x_OPERA_MODE, 
+				AMG883x_MODE_NORMAL);
+	ret = amg883x_write_reg(amg883x, AMG883x_INT_CTRL, 0x03);
+	ret = amg883x_write_reg(amg883x, AMG883x_INTHL, 0x80);
+	ret = amg883x_write_reg(amg883x, AMG883x_INTHH, 0x00);
 	if (ret < 0) {
 		dev_err(dev, "wrtie operation mode failed!, %d\n", ret);
 		return ret;
@@ -153,12 +190,12 @@ static int amg883x_release(struct inode *inode, struct file *filp)
 {
 	int ret;
 	struct device *dev = NULL;
-	struct amg883x *ir_array = filp->private_data;
+	struct amg883x *amg883x = filp->private_data;
 
 	filp->private_data = NULL;
-	dev = &ir_array->client->dev;
+	dev = &amg883x->client->dev;
 	
-	ret = i2c_smbus_write_byte_data(ir_array->client, AMG883x_OPERA_MODE, 
+	ret = amg883x_write_reg(amg883x, AMG883x_OPERA_MODE, 
 					AMG883x_MODE_SLEEP);
 	if (ret < 0) {
 		dev_err(dev, "wrtie operation mode failed!, %d\n", ret);
@@ -173,43 +210,48 @@ static int amg883x_release(struct inode *inode, struct file *filp)
 static ssize_t amg883x_read(struct  file *filp,  char  *buf, size_t len, 
 			     loff_t *offset) 
 {
-	struct amg883x *ir_array = filp->private_data;
-	struct i2c_client *client = ir_array->client;
-	struct device *dev = &client->dev;
+	struct amg883x *amg883x = filp->private_data;
+	struct device *dev = &amg883x->client->dev;
 	struct amg883x_read_data *rd_buf;
 	s32 value;
 	int i;
+	int ret;
 
 	rd_buf = kmalloc(sizeof(struct amg883x_read_data), 
 			      GFP_KERNEL);
 
-	value = i2c_smbus_read_byte_data(client, AMG883x_OPERA_MODE);
+	ret = amg883x_read_reg(amg883x, AMG883x_OPERA_MODE, (u8 *)&value);
 	rd_buf->mode = (u8)value;
-	value = i2c_smbus_read_byte_data(client, AMG883x_FRAME_RATE);
+	ret = amg883x_read_reg(amg883x, AMG883x_FRAME_RATE, (u8 *)&value);
 	rd_buf->fps = (u8)value;
-	value = i2c_smbus_read_byte_data(client, AMG883x_INT_CTRL);
+	ret = amg883x_read_reg(amg883x, AMG883x_INT_CTRL, (u8 *)&value);
 	rd_buf->int_control = (u8)value;
-	value = i2c_smbus_read_byte_data(client, AMG883x_STATUS);
+	ret = amg883x_read_reg(amg883x, AMG883x_STATUS, (u8 *)&value);
 	rd_buf->status = (u8)value;
-	value = i2c_smbus_read_word_data(client, AMG883x_INTHL);
+	ret = amg883x_read_reg(amg883x, AMG883x_INTHL, (u8 *)&value);
+	ret = regmap_bulk_read(amg883x->regmap, AMG883x_INTHL, &value, 2);
 	rd_buf->int_high_level = (u16)value;
-	value = i2c_smbus_read_word_data(client, AMG883x_INTHH);
+	ret = regmap_bulk_read(amg883x->regmap, AMG883x_INTHH, &value, 2);
 	rd_buf->int_low_level = (u16)value;
-	value = i2c_smbus_read_word_data(client, AMG883x_IHYSL);
+	ret = regmap_bulk_read(amg883x->regmap, AMG883x_IHYSL, &value, 2);
 	rd_buf->int_hysteresis_level = (u16)value;
-	value = i2c_smbus_read_word_data(client, AMG883x_TEMPERATURE);
+	ret = regmap_bulk_read(amg883x->regmap, AMG883x_TEMPERATURE, &value, 2);
 	rd_buf->thermistor = (u16)value;
 
 	for (i = 0; i < AMG883x_INT_TABLE_CNT; i++) {
 		dev_dbg(dev, "read interrupt table");
-		value = i2c_smbus_read_byte_data(client, AMG883x_INT_TABLE + i);
+		ret = amg883x_read_reg(amg883x, AMG883x_INT_TABLE + i, (u8 *)&value);
 		rd_buf->int_pixel_table[i] = (u8)value;
 	}
 
 	for (i = 0; i < AMG883x_PIXEL_CNT; i++) {
 		dev_dbg(dev, "read pixel table");
-		value = i2c_smbus_read_word_data(client, AMG883x_PIXEL_VALUE + 
-						 i*2);
+		ret = regmap_bulk_read(amg883x->regmap, AMG883x_PIXEL_VALUE + 
+						 i*2, &value, 2);
+		if (ret) {
+			dev_err(dev, "i2c read pixel failed to get temperature");
+			return -EIO;
+		}
 		rd_buf->pixel_value_table[i] = (u16)value;
 	}
 
@@ -224,9 +266,8 @@ static ssize_t amg883x_write( struct file *filp,  const char *buf,
 			       size_t len, loff_t *offset) 
 {
 	int ret;
-	struct amg883x *ir_array = filp->private_data;
-	struct i2c_client *client = ir_array->client;
-	struct device *dev = &client->dev;
+	struct amg883x *amg883x = filp->private_data;
+	struct device *dev = &amg883x->client->dev;
 	struct amg883x_write_data * wr_buf;
 
 	if (len != sizeof(struct amg883x_write_data)) {
@@ -249,7 +290,7 @@ static ssize_t amg883x_write( struct file *filp,  const char *buf,
 	if (wr_buf->wr_flag & AMG883X_WR_FLAG_RESET) {
 		dev_dbg(dev, "write command reset register %02X",
 			wr_buf->reset_reg);
-		ret = i2c_smbus_write_byte_data(client, AMG883x_RESET_REG, 
+		ret = amg883x_write_reg(amg883x, AMG883x_RESET_REG, 
 						wr_buf->reset_reg);
 		if (ret < 0) 
 			return -EFAULT;
@@ -258,7 +299,7 @@ static ssize_t amg883x_write( struct file *filp,  const char *buf,
 	if (wr_buf->wr_flag & AMG883X_WR_FLAG_CLEAR) {
 		dev_dbg(dev, "write command clear register %02X\n", 
 				wr_buf->clear_reg);
-		ret = i2c_smbus_write_byte_data(client, AMG883x_STATUS_CLEAR, 
+		ret = amg883x_write_reg(amg883x, AMG883x_STATUS_CLEAR, 
 						wr_buf->clear_reg);
 		if (ret < 0) 
 			return -EFAULT;
@@ -266,7 +307,7 @@ static ssize_t amg883x_write( struct file *filp,  const char *buf,
 
 	if (wr_buf->wr_flag & AMG883X_WR_FLAG_FPS) {
 		dev_dbg(dev, "write command fps register %02X\n", wr_buf->fps);
-		ret = i2c_smbus_write_byte_data(client, AMG883x_FRAME_RATE, 
+		ret = amg883x_write_reg(amg883x, AMG883x_FRAME_RATE, 
 						wr_buf->fps);
 		if (ret < 0) 
 			return -EFAULT;
@@ -275,7 +316,7 @@ static ssize_t amg883x_write( struct file *filp,  const char *buf,
 	if (wr_buf->wr_flag & AMG883X_WR_FLAG_INTC) {
 		dev_dbg(dev, "write command int control register %02X\n", 
 			wr_buf->int_ctrl_reg);
-		ret = i2c_smbus_write_byte_data(client, AMG883x_INT_CTRL, 
+		ret = amg883x_write_reg(amg883x, AMG883x_INT_CTRL, 
 						wr_buf->int_ctrl_reg);
 		if (ret < 0) 
 			return -EFAULT;
@@ -287,11 +328,10 @@ static ssize_t amg883x_write( struct file *filp,  const char *buf,
 
 static ssize_t amg883x_ioctl( struct file *filp, unsigned int cmd, unsigned long arg ) 
 {
-	struct amg883x *ir_array = filp->private_data;
-	struct i2c_client *client = ir_array->client;
-	struct device *dev = &client->dev;
+	struct amg883x *amg883x = filp->private_data;
+	struct device *dev = &amg883x->client->dev;
 	int ret = 0;
-	s32 value;
+	int value = 0;
 
 	switch (cmd) {
 	case AMG_CMD_PW_ON:
@@ -303,10 +343,10 @@ static ssize_t amg883x_ioctl( struct file *filp, unsigned int cmd, unsigned long
 	case AMG_CMD_RD_TEMP:
 		dev_info(dev, "get ioctl command read device temperature\n");
 
-        	value = i2c_smbus_read_word_data(client, AMG883x_TEMPERATURE);
+        	ret = regmap_bulk_read(amg883x->regmap, AMG883x_TEMPERATURE, &value, 2);
 
-		if (value < 0) {
-			dev_err(dev, "smbus read word failed to get temperature");
+		if (ret) {
+			dev_err(dev, "i2c read word failed to get temperature");
 			ret = -EIO;
 		} else {
 			if (copy_to_user((int *)arg, &value, sizeof(int)))
@@ -352,20 +392,17 @@ static int amg883x_probe(struct i2c_client *client,
 	int ret;
 	dev_info(dev, "%s insert!\n", dev->of_node->name);
 
-	if (!i2c_check_functionality(client->adapter, 
-				     I2C_FUNC_SMBUS_READ_BYTE_DATA | 
-				     I2C_FUNC_SMBUS_READ_WORD_DATA |
-				     I2C_FUNC_SMBUS_WRITE_BYTE_DATA | 
-				     I2C_FUNC_SMBUS_WRITE_WORD_DATA)) {
-		dev_err(dev, "smbus read byte, write byte not supported!\n");
-		return -EIO;
-	}
-
 	amg883x = devm_kzalloc(dev, sizeof(amg883x), GFP_KERNEL);
 	if (!amg883x)
 		return -ENOMEM;
 
 	amg883x->client = client;
+
+	amg883x->regmap = devm_regmap_init_i2c(client, &amg883x_regmap_config);
+	if (IS_ERR(amg883x->regmap)) {
+		dev_err(dev, "Failed to initialize I2C\n");
+		return -ENODEV;
+	}
 
 	amg883x->int_gpio = devm_gpiod_get_optional(dev, "int", GPIOD_IN);
 	if (IS_ERR(amg883x->int_gpio))
