@@ -37,6 +37,7 @@
 #define AMG883x_INT_TABLE_CNT	0x08
 #define AMG883x_PIXEL_VALUE	0x80
 #define AMG883x_PIXEL_CNT	64
+#define AMG883x_RESERVED_REG 	0x06
 
 static DECLARE_WAIT_QUEUE_HEAD(amg883x_rq);
 static int new_data_ready = false;
@@ -50,10 +51,51 @@ struct amg883x {
 	struct regmap *regmap;
 };
 
+static const struct regmap_range amg883x_rd_reg_range[] = {
+	{
+		.range_min = 0x00,
+		.range_max = 0x00,
+	},{
+		.range_min = 0x02,
+		.range_max = 0x04,
+	},{
+		.range_min = 0x07,
+		.range_max = 0x17,
+	},{
+		.range_min = 0x80,
+		.range_max = 0xFF,
+	},
+};
+
+static const struct regmap_range amg883x_wr_reg_range[] = {
+	{
+		.range_min = 0x00,
+		.range_max = 0x03,
+	},{
+		.range_min = 0x05,
+		.range_max = 0x05,
+	},{
+		.range_min = 0x08,
+		.range_max = 0x0D,
+	},
+};
+
+static const struct regmap_access_table amg883x_rd_reg_table = {
+	.yes_ranges = amg883x_rd_reg_range,
+	.n_yes_ranges = ARRAY_SIZE(amg883x_rd_reg_range),
+};
+
+static const struct regmap_access_table amg883x_wr_reg_table = {
+	.yes_ranges = amg883x_wr_reg_range,
+	.n_yes_ranges = ARRAY_SIZE(amg883x_wr_reg_range),
+};
+
 static const struct regmap_config amg883x_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 	.max_register = 0xff,
+	.rd_table = &amg883x_rd_reg_table,
+	.wr_table = &amg883x_wr_reg_table,
 };
 
 static inline int amg883x_read_reg(struct amg883x *amg883x, u8 addr, u8 *value)
@@ -78,7 +120,7 @@ static inline int amg883x_write_reg(struct amg883x *amg883x, u8 addr, u8 value)
 
 	ret = regmap_write(amg883x->regmap, addr , value);
 	if (ret) {
-		dev_err(amg883x->dev, "i2c read failed at addr: %x\n", addr);
+		dev_err(amg883x->dev, "i2c write failed at addr: %x\n", addr);
 		return ret;
 	}
 
@@ -158,6 +200,7 @@ static irqreturn_t amg883x_irq_handler(int irq, void *devid)
 static int amg883x_open(struct inode *inode, struct file *filp)
 {
 	int ret;
+	u8 value;
 	struct miscdevice *misc = filp->private_data;
 	struct amg883x *ir_array = container_of(misc, struct amg883x, miscdev);
 	struct amg883x *amg883x = container_of(misc, struct amg883x, miscdev);
@@ -182,6 +225,19 @@ static int amg883x_open(struct inode *inode, struct file *filp)
 		dev_err(dev, "wrtie operation mode failed!, %d\n", ret);
 		return ret;
 	}
+
+	/**
+	 * test case for the reg range of the regmap framework.
+	 */
+	ret = amg883x_read_reg(amg883x, AMG883x_RESERVED_REG, &value);
+	dev_err(dev, "read reg out of range!, %d\n", ret);
+	ret = amg883x_write_reg(amg883x, AMG883x_RESERVED_REG, 0x00);
+	dev_err(dev, "write reg out of range!, %d\n", ret);
+	ret = amg883x_read_reg(amg883x, AMG883x_STATUS_CLEAR, &value);
+	dev_err(dev, "read reg out of range!, %d\n", ret);
+	ret = amg883x_write_reg(amg883x, AMG883x_STATUS, 0x00);
+	dev_err(dev, "write reg out of range!, %d\n", ret);
+
 
 	return 0;
 }
